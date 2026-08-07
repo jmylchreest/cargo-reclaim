@@ -33,9 +33,13 @@ pub use background::{
     BackgroundServicePaths, BackgroundServiceResult, BackgroundServiceRunSummary,
     BackgroundServiceSleeper, BackgroundServiceState, BackgroundServiceStatus,
     BackgroundSkippedProject, BackgroundTriggerReasonSummary, BackgroundTriggerSummary,
-    DEFAULT_BACKGROUND_CHECK_EVERY, PlatformBackgroundServiceCycleRunner,
+    DEFAULT_BACKGROUND_CHECK_EVERY, DEFAULT_KEEP_PLANS, DEFAULT_KEEP_REPORTS,
+    DEFAULT_KEEP_ROTATED_LOGS, DEFAULT_MAX_LOG_BYTES, DEFAULT_MAX_PLAN_AGE,
+    DEFAULT_MAX_PLANS_BYTES, PlatformBackgroundServiceCycleRunner, StateRetentionError,
+    StateRetentionOutcome, StateRetentionPolicy, StateRetentionResult,
     SystemBackgroundServiceClock, ThreadBackgroundServiceSleeper, append_background_run_log_record,
-    read_background_run_log, read_background_service_state, refresh_background_service_state,
+    prune_plans_dir, prune_reports_dir, prune_service_state, read_background_run_log,
+    read_background_service_state, refresh_background_service_state, rotate_log,
     run_background_cleanup_cycle, run_background_service, run_background_service_with_runtime,
     write_background_service_state,
 };
@@ -59,8 +63,8 @@ pub use config::{
     BackgroundConfig, BackgroundLimiter, BackgroundMode, BackgroundTrigger,
     CARGO_CONFIG_RECOMMEND_SCHEMA_VERSION, CargoConfigOutputDir, CargoConfigRecommendReport,
     CargoConfigRecommendRequest, CargoConfigRecommendation, ConfigError, PolicyThresholdConfig,
-    ReclaimConfig, WholeTargetConfig, build_cargo_config_recommend_report, load_config_from_path,
-    parse_config,
+    ReclaimConfig, SchedulerRetentionConfig, WholeTargetConfig,
+    build_cargo_config_recommend_report, load_config_from_path, parse_config,
 };
 pub use disk::{DiskFreeSpace, disk_free_basis_points, disk_free_space};
 pub use error::{ReclaimError, ReclaimResult};

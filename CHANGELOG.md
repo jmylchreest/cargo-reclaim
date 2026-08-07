@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). cargo-r
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- The scheduler service never pruned its own state, so plans, reports, and run logs grew unbounded — on a large workspace a plan snapshot reaches hundreds of megabytes, so a 5-minute trigger wrote gigabytes per hour. The service now prunes at startup (clearing any existing backlog) and after every cycle; terminal `apply` prunes the reports directory it writes to.
+
+### Added
+
+- `[scheduler.retention]`: `keep_plans` (32), `max_plan_age` (14d), `max_plans_size` (1 GiB), `keep_reports` (32), `max_log_size` (64 MiB, rotates `runs.jsonl` and `scheduler.log`), `keep_rotated_logs` (2), `enabled`. Defaults apply without config changes; `0` disables a count budget, `enabled = false` disables retention. Pruning is newest-first and always keeps the most recent plan; a prune failure is reported by `scheduler service status` instead of stopping the run.
+
+---
+
 ## [0.5.0] - 2026-07-22
 
 ### Added
