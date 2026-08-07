@@ -131,6 +131,11 @@ pub struct PlanEntry {
     pub action: PlanAction,
     pub policy_reason: String,
     pub requires_confirmation: bool,
+    /// Target directory this entry was inventoried from, when the planner knew it.
+    /// Decisions taken for a whole target at once — notably active-build protection —
+    /// are recorded per file here but summarized per target when the plan is
+    /// persisted, so this is the grouping key.
+    pub target_root: Option<PathBuf>,
 }
 
 impl PlanEntry {
@@ -149,7 +154,13 @@ impl PlanEntry {
             action,
             policy_reason: non_empty_policy_reason(policy_reason)?,
             requires_confirmation,
+            target_root: None,
         })
+    }
+
+    pub fn with_target_root(mut self, target_root: Option<PathBuf>) -> Self {
+        self.target_root = target_root;
+        self
     }
 
     pub fn preserved(

@@ -841,6 +841,7 @@ mod tests {
                     persisted_entry("target/debug/incremental", "requires_confirmation", 3),
                     persisted_entry("target/doc", "delete", 4),
                 ],
+                active_skips: Vec::new(),
                 skipped_paths: Vec::new(),
                 totals: PersistedPlanTotals {
                     entry_count: 2,

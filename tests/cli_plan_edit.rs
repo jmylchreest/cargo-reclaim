@@ -7,6 +7,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
+/// The saved plan stores entries dictionary-encoded, so read it back through the
+/// real loader and splice the decoded entries into the raw document. Assertions
+/// below then see the entries as the rest of the tool does.
+fn plan_json(path: &Path) -> Result<Value, Box<dyn Error>> {
+    let mut value: Value = serde_json::from_slice(&fs::read(path)?)?;
+    let document = cargo_reclaim::load_plan_from_path(path)?;
+    value["plan"]["entries"] = serde_json::to_value(&document.body.plan.entries)?;
+    Ok(value)
+}
+
 #[test]
 fn edit_plan_selects_exact_persisted_entry_path() -> Result<(), Box<dyn Error>> {
     let temp = TestTemp::new("cli_edit_plan_select")?;
@@ -24,7 +34,7 @@ fn edit_plan_selects_exact_persisted_entry_path() -> Result<(), Box<dyn Error>> 
         .output()?;
     assert!(plan_output.status.success());
 
-    let before: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
+    let before = plan_json(&plan_path)?;
     let entry_path = before["plan"]["entries"][0]["snapshot"]["path"]
         .as_str()
         .expect("persisted path")
@@ -51,7 +61,7 @@ fn edit_plan_selects_exact_persisted_entry_path() -> Result<(), Box<dyn Error>> 
     assert_eq!(stdout["deselected_count"], 0);
     assert_eq!(stdout["totals"]["delete_candidate_count"], 1);
 
-    let after: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
+    let after = plan_json(&plan_path)?;
     assert_ne!(after["id"].as_str().expect("plan id"), original_id);
     assert_eq!(after["id"], stdout["plan_id"]);
     assert_eq!(after["interactive_selection_modified"], true);
@@ -81,7 +91,7 @@ fn edit_plan_deselects_without_deleting_on_apply_validation() -> Result<(), Box<
         .output()?;
     assert!(plan_output.status.success());
 
-    let before: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
+    let before = plan_json(&plan_path)?;
     let entry_path = before["plan"]["entries"][0]["snapshot"]["path"]
         .as_str()
         .expect("persisted path")
@@ -99,7 +109,7 @@ fn edit_plan_deselects_without_deleting_on_apply_validation() -> Result<(), Box<
     assert!(stdout.contains("cargo-reclaim edit-plan"));
     assert!(stdout.contains("deselected: 1"));
 
-    let after: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
+    let after = plan_json(&plan_path)?;
     assert_eq!(after["plan"]["entries"][0]["action"], "preserve");
     assert_eq!(after["plan"]["entries"][0]["requires_confirmation"], false);
     assert_eq!(
@@ -136,7 +146,7 @@ fn edit_plan_selects_and_deselects_persisted_entry_indices() -> Result<(), Box<d
     assert_eq!(stdout["selected_count"], 1);
     assert_eq!(stdout["deselected_count"], 1);
 
-    let after: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
+    let after = plan_json(&plan_path)?;
     assert_eq!(after["interactive_selection_modified"], true);
     assert_eq!(after["plan"]["entries"][0]["action"], "delete");
     assert_eq!(
@@ -174,7 +184,7 @@ fn edit_plan_selects_and_deselects_persisted_artifact_classes() -> Result<(), Bo
     assert_eq!(stdout["selected_count"], 1);
     assert_eq!(stdout["deselected_count"], 1);
 
-    let after: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
+    let after = plan_json(&plan_path)?;
     let incremental = after["plan"]["entries"]
         .as_array()
         .expect("entries")
@@ -212,7 +222,7 @@ fn edit_plan_interactive_selects_entry_index() -> Result<(), Box<dyn Error>> {
     assert!(stdout.contains("cargo-reclaim edit-plan"));
     assert!(stdout.contains("selected: 1"));
 
-    let after: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
+    let after = plan_json(&plan_path)?;
     assert_eq!(after["interactive_selection_modified"], true);
     assert_eq!(after["plan"]["entries"][0]["action"], "delete");
     assert_eq!(
@@ -236,7 +246,7 @@ fn edit_plan_interactive_selects_project_group() -> Result<(), Box<dyn Error>> {
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("selected: 1"));
 
-    let after: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
+    let after = plan_json(&plan_path)?;
     let entries = after["plan"]["entries"].as_array().expect("entries");
     assert_eq!(entries.len(), 2);
     let incremental = entries
@@ -264,7 +274,7 @@ fn edit_plan_interactive_selects_whole_target_by_entry_index() -> Result<(), Box
     let stderr = String::from_utf8(output.stderr)?;
     assert!(stderr.contains("whole_target entries must be selected by entry number"));
 
-    let after: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
+    let after = plan_json(&plan_path)?;
     let entry = &after["plan"]["entries"][0];
     assert_eq!(entry["artifact_class"], "whole_target");
     assert_eq!(entry["action"], "delete");
@@ -329,7 +339,7 @@ fn edit_plan_interactive_project_group_does_not_select_unknown_entries()
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("selected: 1"));
-    let after: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
+    let after = plan_json(&plan_path)?;
     let entries = after["plan"]["entries"].as_array().expect("entries");
     let unknown = entries
         .iter()
@@ -359,7 +369,7 @@ fn edit_plan_interactive_project_group_includes_strong_marker_target() -> Result
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("selected: 1"));
 
-    let after: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
+    let after = plan_json(&plan_path)?;
     let entries = after["plan"]["entries"].as_array().expect("entries");
     let incremental = entries
         .iter()
@@ -605,7 +615,7 @@ fn edit_plan_rejects_cross_action_entry_conflicts_without_rewriting_plan()
     let temp = TestTemp::new("cli_edit_plan_index_conflict")?;
     let plan_path = write_two_entry_plan(&temp)?;
     let before = fs::read(&plan_path)?;
-    let before_json: Value = serde_json::from_slice(&before)?;
+    let before_json = plan_json(&plan_path)?;
     let entry_path = before_json["plan"]["entries"][0]["snapshot"]["path"]
         .as_str()
         .expect("persisted path")
@@ -672,7 +682,7 @@ fn edit_plan_rejects_cross_action_class_and_path_conflicts_without_rewriting_pla
     let temp = TestTemp::new("cli_edit_plan_class_path_conflict")?;
     let plan_path = write_two_entry_plan(&temp)?;
     let before = fs::read(&plan_path)?;
-    let before_json: Value = serde_json::from_slice(&before)?;
+    let before_json = plan_json(&plan_path)?;
     let entry_path = before_json["plan"]["entries"]
         .as_array()
         .expect("entries")
@@ -754,7 +764,7 @@ fn edit_plan_list_terminal_numbers_entries_without_rewriting_plan() -> Result<()
     let temp = TestTemp::new("cli_edit_plan_list_terminal")?;
     let plan_path = write_two_entry_plan(&temp)?;
     let before_bytes = fs::read(&plan_path)?;
-    let before_json: Value = serde_json::from_slice(&before_bytes)?;
+    let before_json = plan_json(&plan_path)?;
     let first = &before_json["plan"]["entries"][0];
     let first_row = format!(
         "1\t{}\t{}\t{}\t",
@@ -790,7 +800,7 @@ fn edit_plan_list_json_preserves_order_and_fields() -> Result<(), Box<dyn Error>
     let temp = TestTemp::new("cli_edit_plan_list_json")?;
     let plan_path = write_two_entry_plan(&temp)?;
     let before_bytes = fs::read(&plan_path)?;
-    let before_json: Value = serde_json::from_slice(&before_bytes)?;
+    let before_json = plan_json(&plan_path)?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_cargo-reclaim"))
         .args(["edit-plan", "--plan"])
@@ -832,7 +842,7 @@ fn edit_plan_list_rejects_edit_flags_without_rewriting_plan() -> Result<(), Box<
     let temp = TestTemp::new("cli_edit_plan_list_conflict")?;
     let plan_path = write_two_entry_plan(&temp)?;
     let before = fs::read(&plan_path)?;
-    let before_json: Value = serde_json::from_slice(&before)?;
+    let before_json = plan_json(&plan_path)?;
     let entry_path = before_json["plan"]["entries"][0]["snapshot"]["path"]
         .as_str()
         .expect("persisted path")
@@ -970,7 +980,7 @@ fn write_plan_with_unknown_entry(temp: &TestTemp) -> Result<PathBuf, Box<dyn Err
         .arg(temp.path())
         .output()?;
     assert!(output.status.success());
-    let plan: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
+    let plan = plan_json(&plan_path)?;
     assert!(
         plan["plan"]["entries"]
             .as_array()
