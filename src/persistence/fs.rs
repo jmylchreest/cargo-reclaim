@@ -11,7 +11,10 @@ pub fn save_plan_to_path(
 ) -> PlanPersistenceResult<()> {
     let path = path.as_ref();
     let temp_path = temp_sibling_path(path);
-    let bytes = serde_json::to_vec_pretty(document)?;
+    // Compact, not pretty: indentation was a quarter of a large plan's bytes, and
+    // the file is machine-revalidated rather than hand-read (`edit-plan` and `--json`
+    // are the human-facing paths).
+    let bytes = serde_json::to_vec(document)?;
 
     fs::write(&temp_path, bytes).map_err(|error| io_error(&temp_path, error))?;
     fs::rename(&temp_path, path).map_err(|error| io_error(path, error))?;

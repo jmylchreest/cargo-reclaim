@@ -1,6 +1,14 @@
+mod retention;
 mod run_log;
 mod runner;
 mod service;
+
+pub use retention::{
+    DEFAULT_KEEP_PLANS, DEFAULT_KEEP_REPORTS, DEFAULT_KEEP_ROTATED_LOGS, DEFAULT_MAX_LOG_BYTES,
+    DEFAULT_MAX_PLAN_AGE, DEFAULT_MAX_PLANS_BYTES, StateRetentionError, StateRetentionOutcome,
+    StateRetentionPolicy, StateRetentionResult, prune_plans_dir, prune_reports_dir,
+    prune_service_state, rotate_log,
+};
 
 pub use run_log::{
     BACKGROUND_RUN_LOG_SCHEMA_VERSION, BackgroundApplyEntrySummary, BackgroundApplySummary,

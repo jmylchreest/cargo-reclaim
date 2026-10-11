@@ -34,6 +34,16 @@ allow_unattended_high_policy = false
 state_dir = "state"
 log_dir = "logs"
 
+# How much of the service's own state is kept. Every key has a default, so these
+# budgets apply even without this block; set `enabled = false` to keep everything.
+[scheduler.retention]
+keep_plans = 32
+max_plan_age = "14d"
+max_plans_size = "1 GiB"
+keep_reports = 32
+max_log_size = "64 MiB"
+keep_rotated_logs = 2
+
 [background]
 enabled = false
 target_free_disk = "30 GiB"
