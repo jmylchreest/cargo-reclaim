@@ -27,8 +27,16 @@ pub(super) struct ApplyActivity {
 
 impl ApplyActivity {
     pub(super) fn new(document: &PersistedPlan, now: SystemTime) -> Self {
+        Self::with_provider(document, now, &platform_active_observation_provider())
+    }
+
+    fn with_provider(
+        document: &PersistedPlan,
+        now: SystemTime,
+        provider: &impl ActiveObservationProvider,
+    ) -> Self {
         let saved = &document.body.invocation.scanner_options;
-        let options = ScannerOptions {
+        let mut options = ScannerOptions {
             follow_symlinks: saved.follow_symlinks,
             allow_name_only_targets: saved.allow_name_only_targets,
             cross_filesystems: saved.cross_filesystems,
@@ -37,10 +45,24 @@ impl ApplyActivity {
         };
         let mut contexts = Vec::new();
         let mut error = None;
-        match scan_roots(
-            document.body.plan.input.roots.iter().map(PathBuf::from),
-            &options,
-        ) {
+        for path in options
+            .ignored_paths
+            .iter_mut()
+            .chain(&mut options.skipped_paths)
+        {
+            match std::path::absolute(&*path) {
+                Ok(absolute) => *path = absolute,
+                Err(cause) => error = Some(format!("cannot resolve exclusion path: {cause}")),
+            }
+        }
+        let mut roots = Vec::new();
+        for root in &document.body.plan.input.roots {
+            match std::path::absolute(root) {
+                Ok(path) => roots.push(path),
+                Err(cause) => error = Some(format!("cannot resolve scan root: {cause}")),
+            }
+        }
+        match scan_roots(roots, &options) {
             Ok(items) => {
                 for item in items {
                     if let ScanItem::TargetCandidate(candidate) = item
@@ -49,12 +71,9 @@ impl ApplyActivity {
                         let mut context = candidate
                             .target_context
                             .unwrap_or_else(|| TargetContext::new(&candidate.path));
-                        match std::path::absolute(&context.target_root) {
-                            Ok(path) => context.target_root = path,
-                            Err(cause) => {
-                                error = Some(format!("cannot resolve target path: {cause}"));
-                                continue;
-                            }
+                        if let Err(cause) = normalize_context(&mut context) {
+                            error = Some(format!("cannot resolve target context: {cause}"));
+                            continue;
                         }
                         contexts.push(context);
                     }
@@ -62,9 +81,9 @@ impl ApplyActivity {
             }
             Err(cause) => error = Some(format!("cannot recheck target activity: {cause}")),
         }
-        let observation = platform_active_observation_provider().observe(
-            &ActiveObservationScope::from_target_contexts(contexts.clone()),
-        );
+        let observation = provider.observe(&ActiveObservationScope::from_target_contexts(
+            contexts.clone(),
+        ));
         Self {
             contexts,
             observation,
@@ -137,6 +156,19 @@ impl ApplyActivity {
     }
 }
 
+// Use the same absolute path base for process working directories, references,
+// candidate paths and exclusions without following filesystem symlinks.
+fn normalize_context(context: &mut TargetContext) -> std::io::Result<()> {
+    context.target_root = std::path::absolute(&context.target_root)?;
+    if let Some(path) = &mut context.project_root {
+        *path = std::path::absolute(&*path)?;
+    }
+    if let Some(path) = &mut context.build_root {
+        *path = std::path::absolute(&*path)?;
+    }
+    Ok(())
+}
+
 fn has_recent_write(
     root: &Path,
     skipped: &[PathBuf],
@@ -184,6 +216,102 @@ mod tests {
             error: None,
             checked: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn relative_root_is_normalized_before_process_observation() {
+        use crate::{
+            InventoryOptions, Plan, PlanCommandKind, PlanInput, PlanInvocation, PlannerOptions,
+            PolicyKind, SavePlanOptions, persist_plan,
+        };
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let fixture = Fixture(PathBuf::from(format!("reclaim-relative-process-{unique}")));
+        fs::create_dir_all(fixture.0.join("target")).unwrap();
+        fs::write(
+            fixture.0.join("Cargo.toml"),
+            "[package]\nname = \"sample\"\n",
+        )
+        .unwrap();
+        struct CargoInProject(PathBuf);
+        impl ActiveObservationProvider for CargoInProject {
+            fn observe(&self, scope: &ActiveObservationScope) -> ActiveObservation {
+                let cwd = self.0.clone();
+                assert!(
+                    scope
+                        .target_contexts()
+                        .iter()
+                        .any(|context| context.project_root.as_ref() == Some(&cwd))
+                );
+                for context in scope.target_contexts() {
+                    assert!(context.target_root.is_absolute());
+                    assert!(
+                        context
+                            .project_root
+                            .as_ref()
+                            .is_none_or(|p| p.is_absolute())
+                    );
+                    assert!(context.build_root.as_ref().is_none_or(|p| p.is_absolute()));
+                }
+                ActiveObservation::complete([
+                    ObservedCargoProcess::new(CargoTool::Cargo).with_cwd(cwd)
+                ])
+            }
+        }
+        let now = SystemTime::now();
+        let plan = Plan::new(PlanInput::from_root(&fixture.0).unwrap(), vec![]);
+        let document = persist_plan(
+            &plan,
+            SavePlanOptions {
+                created_at: now,
+                expires_at: now + Duration::from_secs(3600),
+                interactive_selection_modified: false,
+                invocation: PlanInvocation::new(
+                    PlanCommandKind::Plan,
+                    PolicyKind::Balanced,
+                    &ScannerOptions::default(),
+                    &InventoryOptions::default(),
+                    &PlannerOptions::default(),
+                ),
+            },
+        )
+        .unwrap();
+        let provider = CargoInProject(std::path::absolute(&fixture.0).unwrap());
+        let mut activity = ApplyActivity::with_provider(&document, now, &provider);
+        assert!(
+            activity
+                .skip_reason(&fixture.0.join("target/debug/deps/old.rlib"))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn relative_context_matches_absolute_cargo_cwd_and_build_references() {
+        let mut context = TargetContext::new("target")
+            .with_project_root(".")
+            .with_build_root("build");
+        normalize_context(&mut context).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(context.target_root, cwd.join("target"));
+        assert_eq!(context.project_root, Some(cwd.clone()));
+        assert_eq!(context.build_root, Some(cwd.join("build")));
+        let observation =
+            ActiveObservation::complete([
+                ObservedCargoProcess::new(CargoTool::Cargo).with_cwd(&cwd)
+            ]);
+        assert!(active_skip_reason(Some(&context), &observation).is_some());
+        let observation =
+            ActiveObservation::complete([ObservedCargoProcess::new(CargoTool::Rustc)
+                .with_referenced_path(cwd.join("build/deps/libsample.rlib"))]);
+        assert!(active_skip_reason(Some(&context), &observation).is_some());
     }
 
     #[test]

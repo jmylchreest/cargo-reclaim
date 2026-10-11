@@ -346,6 +346,55 @@ fn apply_preserves_an_unchanged_candidate_when_its_target_has_new_writes()
     Ok(())
 }
 
+#[test]
+fn apply_honors_relative_exclusions_during_recent_write_revalidation() -> Result<(), Box<dyn Error>>
+{
+    // Keep the fixture beneath cwd so the plan can use relative paths without
+    // changing process-global cwd in a parallel test run.
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let temp = TestTemp {
+        path: PathBuf::from(format!("reclaim-relative-{unique}")),
+    };
+    let target = temp.path.join("target");
+    let skipped = target.join("debug/cache");
+    let file = target.join("debug/deps/libsample-0123456789abcdef.rlib");
+    fs::create_dir_all(file.parent().unwrap())?;
+    fs::create_dir_all(&skipped)?;
+    fs::write(target.join(".rustc_info.json"), "{}")?;
+    fs::write(&file, b"abc")?;
+    fs::write(skipped.join("fresh.bin"), b"new excluded data")?;
+    let now = SystemTime::now();
+    let old = now - Duration::from_secs(14 * 86400);
+    for path in [
+        &file,
+        &target.join(".rustc_info.json"),
+        &target.join("debug/deps"),
+        &target.join("debug"),
+        &target,
+    ] {
+        fs::File::open(path)?.set_modified(old)?;
+    }
+    let mut document = persisted_plan_for_path(&file, 3)?;
+    document.body.plan.input.roots = vec![temp.path.to_string_lossy().into_owned()];
+    document.body.invocation.scanner_options.skipped_paths =
+        vec![skipped.to_string_lossy().into_owned()];
+    document
+        .body
+        .invocation
+        .planner_options
+        .recent_write_keep_window_seconds = Some(7 * 86400);
+    document.body.created_at = cargo_reclaim::PersistedTimestamp::from_system_time(old)?;
+    document.body.expires_at =
+        cargo_reclaim::PersistedTimestamp::from_system_time(now + Duration::from_secs(3600))?;
+    document.id = PlanId::from_body(&document.body)?;
+
+    let report = execute_persisted_plan_apply(&document, now)?;
+    assert_eq!(report.totals.applied_count, 1, "{report:?}");
+    assert!(!file.exists());
+    assert!(skipped.join("fresh.bin").exists());
+    Ok(())
+}
+
 fn persisted_plan_for_path(
     path: impl Into<PathBuf>,
     size_bytes: u64,
