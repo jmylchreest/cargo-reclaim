@@ -457,10 +457,12 @@ fn run_config_whole_target_confirm_persists_root_entry() -> Result<(), Box<dyn E
 
     assert!(output.status.success());
     let persisted: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
-    let entries = persisted["plan"]["entries"].as_array().expect("entries");
+    // Entries are dictionary-encoded on disk; decode through the real loader.
+    let decoded = cargo_reclaim::load_plan_from_path(&plan_path)?;
+    let entries = &decoded.body.plan.entries;
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0]["artifact_class"], "whole_target");
-    assert_eq!(entries[0]["action"], "requires_confirmation");
+    assert_eq!(entries[0].artifact_class, "whole_target");
+    assert_eq!(entries[0].action, "requires_confirmation");
     assert_eq!(
         persisted["invocation"]["planner_options"]["whole_target_mode"],
         "confirm"

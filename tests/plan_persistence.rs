@@ -7,8 +7,8 @@ use cargo_reclaim::{
     ArtifactClass, InventoryOptions, PERSISTED_PLAN_SCHEMA_VERSION, PathKind, PathSnapshot, Plan,
     PlanAction, PlanCommandKind, PlanEntry, PlanInput, PlanInvocation, PlanPersistenceError,
     PlanSkip, PlanSkipReason, PlannerOptions, PolicyKind, SavePlanOptions, ScannerOptions,
-    TargetEvidence, WholeTargetMode, ensure_plan_usable, load_plan_from_path, persist_plan,
-    save_plan_to_path,
+    TargetEvidence, WholeTargetMode, ensure_plan_usable, load_plan_from_path, persist_audit_plan,
+    persist_plan, save_plan_to_path,
 };
 use serde_json::json;
 
@@ -324,17 +324,15 @@ fn persists_whole_target_artifact_class_and_planner_mode() -> Result<(), Box<dyn
     )?;
     let value = serde_json::to_value(&document)?;
 
-    assert_eq!(
-        value["plan"]["entries"][0]["artifact_class"],
-        "whole_target"
-    );
+    assert_eq!(document.body.plan.entries[0].artifact_class, "whole_target");
     assert_eq!(
         value["invocation"]["planner_options"]["whole_target_mode"],
         "confirm"
     );
     assert!(
-        value["plan"]["entries"][0]["snapshot"]
-            .get("content_fingerprint")
+        document.body.plan.entries[0]
+            .snapshot
+            .content_fingerprint
             .is_none()
     );
     Ok(())
@@ -374,10 +372,8 @@ fn persists_hash_grouped_intermediate_artifact_class() -> Result<(), Box<dyn Err
             ),
         },
     )?;
-    let value = serde_json::to_value(&document)?;
-
     assert_eq!(
-        value["plan"]["entries"][0]["artifact_class"],
+        document.body.plan.entries[0].artifact_class,
         "fingerprint_group_intermediate"
     );
     Ok(())
@@ -441,6 +437,113 @@ fn persists_entries_in_plan_order_when_converted_in_parallel() -> Result<(), Box
 
     assert_eq!(persisted_paths, expected_paths);
     Ok(())
+}
+
+#[test]
+fn audit_plans_summarize_active_skips_per_target() -> Result<(), Box<dyn Error>> {
+    let created_at = UNIX_EPOCH + Duration::from_secs(1_000);
+    let expires_at = created_at + Duration::from_secs(3_600);
+    let plan = Plan::new(
+        PlanInput::from_root(".")?,
+        vec![
+            active_skip_entry("/w/a/target", "/w/a/target/debug/deps/one.rmeta", 10)?,
+            active_skip_entry("/w/a/target", "/w/a/target/debug/deps/two.rmeta", 20)?,
+            active_skip_entry("/w/b/target", "/w/b/target/debug/deps/three.rmeta", 30)?,
+            deletable_entry("/w/c/target/debug/incremental")?,
+        ],
+    );
+
+    let audit = persist_audit_plan(&plan, save_options(created_at, expires_at))?;
+    let editable = persist_plan(&plan, save_options(created_at, expires_at))?;
+
+    // The audit plan keeps only the actionable entry plus one summary per target.
+    assert_eq!(audit.body.plan.entries.len(), 1);
+    assert_eq!(audit.body.plan.entries[0].action, "delete");
+    let summaries = &audit.body.plan.active_skips;
+    assert_eq!(summaries.len(), 2);
+    assert_eq!(summaries[0].target, "/w/a/target");
+    assert_eq!(summaries[0].entry_count, 2);
+    assert_eq!(summaries[0].total_bytes, 30);
+    assert_eq!(
+        summaries[0].reasons,
+        ["an active build is touching a target"]
+    );
+    assert_eq!(summaries[1].target, "/w/b/target");
+    assert_eq!(summaries[1].entry_count, 1);
+
+    // Collapsing is a persistence detail: the totals still describe every entry the
+    // planner produced, and a user-saved plan is unaffected.
+    assert_eq!(audit.body.plan.totals.entry_count, 4);
+    assert_eq!(audit.body.plan.totals.preserved_count, 3);
+    assert_eq!(audit.body.plan.totals, editable.body.plan.totals);
+    assert_eq!(editable.body.plan.entries.len(), 4);
+    assert!(editable.body.plan.active_skips.is_empty());
+    Ok(())
+}
+
+#[test]
+fn audit_plans_keep_active_skips_without_a_known_target() -> Result<(), Box<dyn Error>> {
+    let created_at = UNIX_EPOCH + Duration::from_secs(1_000);
+    let expires_at = created_at + Duration::from_secs(3_600);
+    let entry = PlanEntry::new(
+        PathSnapshot::with_details("/w/loose/file.rmeta", 5, PathKind::File, None)?,
+        ArtifactClass::DepsOutput,
+        TargetEvidence::project_context("Cargo.toml")?,
+        PlanAction::SkipActive,
+        "an active build is touching a target",
+        false,
+    )?;
+    let plan = Plan::new(PlanInput::from_root(".")?, vec![entry]);
+
+    let audit = persist_audit_plan(&plan, save_options(created_at, expires_at))?;
+
+    // With no target root there is nothing to attribute the skip to, so the entry is
+    // written out rather than dropped.
+    assert_eq!(audit.body.plan.entries.len(), 1);
+    assert!(audit.body.plan.active_skips.is_empty());
+    Ok(())
+}
+
+fn save_options(created_at: SystemTime, expires_at: SystemTime) -> SavePlanOptions {
+    SavePlanOptions {
+        created_at,
+        expires_at,
+        interactive_selection_modified: false,
+        invocation: PlanInvocation::new(
+            PlanCommandKind::Plan,
+            PolicyKind::Balanced,
+            &ScannerOptions::default(),
+            &InventoryOptions::default(),
+            &PlannerOptions::default(),
+        ),
+    }
+}
+
+fn active_skip_entry(
+    target_root: &str,
+    path: &str,
+    size_bytes: u64,
+) -> Result<PlanEntry, Box<dyn Error>> {
+    Ok(PlanEntry::new(
+        PathSnapshot::with_details(path, size_bytes, PathKind::File, None)?,
+        ArtifactClass::DepsOutput,
+        TargetEvidence::project_context("Cargo.toml")?,
+        PlanAction::SkipActive,
+        "an active build is touching a target",
+        false,
+    )?
+    .with_target_root(Some(PathBuf::from(target_root))))
+}
+
+fn deletable_entry(path: &str) -> Result<PlanEntry, Box<dyn Error>> {
+    Ok(PlanEntry::new(
+        PathSnapshot::with_details(path, 3, PathKind::Directory, None)?,
+        ArtifactClass::Incremental,
+        TargetEvidence::project_context("Cargo.toml")?,
+        PlanAction::Delete,
+        "derived intermediate output",
+        false,
+    )?)
 }
 
 fn sample_plan(path: PathBuf, modified: SystemTime) -> Result<Plan, Box<dyn Error>> {

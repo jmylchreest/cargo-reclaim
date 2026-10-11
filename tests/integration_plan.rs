@@ -1096,16 +1096,16 @@ fn persisted_deps_output_delete_entry_uses_fast_snapshot_revalidation() -> Resul
             ),
         },
     )?;
-    let value = serde_json::to_value(&document)?;
-    let deps_entry = value["plan"]["entries"]
-        .as_array()
-        .expect("entries should be an array")
+    let deps_entry = document
+        .body
+        .plan
+        .entries
         .iter()
-        .find(|entry| entry["artifact_class"] == "deps_output")
+        .find(|entry| entry.artifact_class == "deps_output")
         .expect("persisted deps output entry");
 
-    assert_eq!(deps_entry["snapshot"]["path_kind"], "file");
-    assert!(deps_entry["snapshot"].get("content_fingerprint").is_none());
+    assert_eq!(deps_entry.snapshot.path_kind, "file");
+    assert!(deps_entry.snapshot.content_fingerprint.is_none());
     Ok(())
 }
 

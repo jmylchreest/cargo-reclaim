@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
@@ -196,26 +197,39 @@ impl PersistedWholeTargetMode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistedPlanSnapshot {
     pub schema_version: u16,
     pub input: PersistedPlanInput,
     pub entries: Vec<PersistedPlanEntry>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Targets that were protected wholesale because a build was touching them.
+    /// The planner reaches that verdict once per target but records it on every
+    /// file inside; persisting those per-file entries is what made plans enormous
+    /// (a busy workspace produced tens of thousands of them, none actionable),
+    /// so they are summarized here instead. `totals` still counts every entry.
+    pub active_skips: Vec<PersistedActiveSkip>,
     pub skipped_paths: Vec<PersistedPlanSkip>,
     pub totals: PersistedPlanTotals,
 }
 
 impl PersistedPlanSnapshot {
-    fn from_plan(plan: &Plan) -> PlanPersistenceResult<Self> {
+    fn from_plan(plan: &Plan, summarize_active_skips: bool) -> PlanPersistenceResult<Self> {
+        let (entries, active_skips) = if summarize_active_skips {
+            collapse_active_skips(&plan.entries)?
+        } else {
+            (
+                plan.entries
+                    .par_iter()
+                    .map(PersistedPlanEntry::from_entry)
+                    .collect::<PlanPersistenceResult<Vec<_>>>()?,
+                Vec::new(),
+            )
+        };
         Ok(Self {
             schema_version: plan.schema_version,
             input: PersistedPlanInput::from_input(&plan.input),
-            entries: plan
-                .entries
-                .par_iter()
-                .map(PersistedPlanEntry::from_entry)
-                .collect::<PlanPersistenceResult<Vec<_>>>()?,
+            entries,
+            active_skips,
             skipped_paths: plan
                 .skipped_paths
                 .iter()
@@ -224,6 +238,68 @@ impl PersistedPlanSnapshot {
             totals: PersistedPlanTotals::from_totals(plan.totals),
         })
     }
+}
+
+/// Split the plan's entries into the ones worth persisting individually and a
+/// per-target summary of the active-build skips. An active skip with no known
+/// target root cannot be attributed to a target, so it is persisted as an entry
+/// rather than dropped.
+fn collapse_active_skips(
+    entries: &[PlanEntry],
+) -> PlanPersistenceResult<(Vec<PersistedPlanEntry>, Vec<PersistedActiveSkip>)> {
+    let mut summaries: Vec<PersistedActiveSkip> = Vec::new();
+    let mut index_by_target: HashMap<&Path, usize> = HashMap::new();
+    let mut kept = Vec::new();
+
+    for entry in entries {
+        let target_root = match (&entry.action, entry.target_root.as_deref()) {
+            (PlanAction::SkipActive, Some(target_root)) => target_root,
+            _ => {
+                kept.push(entry);
+                continue;
+            }
+        };
+
+        let index = *index_by_target.entry(target_root).or_insert_with(|| {
+            summaries.push(PersistedActiveSkip {
+                target: path_string(target_root),
+                entry_count: 0,
+                total_bytes: 0,
+                reasons: Vec::new(),
+            });
+            summaries.len() - 1
+        });
+        let summary = &mut summaries[index];
+        summary.entry_count += 1;
+        summary.total_bytes = summary
+            .total_bytes
+            .saturating_add(entry.snapshot.size_bytes);
+        if !summary
+            .reasons
+            .iter()
+            .any(|reason| reason == &entry.policy_reason)
+        {
+            summary.reasons.push(entry.policy_reason.clone());
+        }
+    }
+
+    let entries = kept
+        .into_par_iter()
+        .map(PersistedPlanEntry::from_entry)
+        .collect::<PlanPersistenceResult<Vec<_>>>()?;
+    Ok((entries, summaries))
+}
+
+/// One target protected wholesale by active-build detection, standing in for the
+/// per-file entries the planner produced for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedActiveSkip {
+    pub target: String,
+    pub entry_count: usize,
+    pub total_bytes: u64,
+    /// The distinct policy reasons recorded across the collapsed entries — which
+    /// active-build signal fired (process scan, target keep window, recent write).
+    pub reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -377,7 +453,31 @@ impl PersistedEvidence {
     }
 }
 
+/// Persist a plan the user can still act on: every entry is written out, so
+/// `edit-plan` can reselect anything the planner protected — including a target
+/// skipped for an active build.
 pub fn persist_plan(plan: &Plan, options: SavePlanOptions) -> PlanPersistenceResult<PersistedPlan> {
+    persist_plan_with_options(plan, options, false)
+}
+
+/// Persist a plan as a background-run audit record. Targets protected wholesale by
+/// active-build detection are summarized per target instead of listing every file
+/// inside them: the background service writes a plan on every cycle forever, and on
+/// a busy workspace those per-file skips were the overwhelming majority of the
+/// document while never being actionable — a run's plan is a record of what
+/// happened, not a document to edit.
+pub fn persist_audit_plan(
+    plan: &Plan,
+    options: SavePlanOptions,
+) -> PlanPersistenceResult<PersistedPlan> {
+    persist_plan_with_options(plan, options, true)
+}
+
+fn persist_plan_with_options(
+    plan: &Plan,
+    options: SavePlanOptions,
+    summarize_active_skips: bool,
+) -> PlanPersistenceResult<PersistedPlan> {
     if options.expires_at <= options.created_at {
         return Err(PlanPersistenceError::InvalidTimeRange);
     }
@@ -387,7 +487,7 @@ pub fn persist_plan(plan: &Plan, options: SavePlanOptions) -> PlanPersistenceRes
         expires_at: PersistedTimestamp::from_system_time(options.expires_at)?,
         interactive_selection_modified: options.interactive_selection_modified,
         invocation: options.invocation,
-        plan: PersistedPlanSnapshot::from_plan(plan)?,
+        plan: PersistedPlanSnapshot::from_plan(plan, summarize_active_skips)?,
     };
     let id = PlanId::from_body(&body)?;
 

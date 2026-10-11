@@ -308,22 +308,19 @@ fn persisted_stale_deps_delete_entry_uses_fast_snapshot_revalidation() -> Result
             ),
         },
     )?;
-    let value = serde_json::to_value(&document)?;
-    let entries = value["plan"]["entries"]
-        .as_array()
-        .expect("entries should be an array");
-    let stale_entry = entries
+    let stale_entry = document
+        .body
+        .plan
+        .entries
         .iter()
         .find(|entry| {
-            entry["artifact_class"] == "stale_deps"
-                && entry["snapshot"]["path"]
-                    .as_str()
-                    .is_some_and(|path| path.ends_with(&format!("sample-{old_hash}")))
+            entry.artifact_class == "stale_deps"
+                && entry.snapshot.path.ends_with(&format!("sample-{old_hash}"))
         })
         .expect("persisted stale deps entry");
 
-    assert_eq!(stale_entry["snapshot"]["path_kind"], "file");
-    assert!(stale_entry["snapshot"].get("content_fingerprint").is_none());
+    assert_eq!(stale_entry.snapshot.path_kind, "file");
+    assert!(stale_entry.snapshot.content_fingerprint.is_none());
     Ok(())
 }
 

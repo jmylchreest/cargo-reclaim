@@ -341,6 +341,179 @@ fn running_state_with_unverifiable_pid_stays_running() {
     assert_eq!(refreshed.last_problem, None);
 }
 
+#[test]
+fn service_startup_prunes_a_plan_backlog_left_by_earlier_runs() -> Result<(), Box<dyn Error>> {
+    let temp = TestTemp::new("background_service_retention")?;
+    let project = write_project(temp.path())?;
+    let config_path = write_config(
+        temp.path(),
+        &format!(
+            "roots = [{}]\n\
+             [background]\ncheck_every = \"1s\"\n\
+             [scheduler.retention]\nkeep_plans = 2\n",
+            toml_string(&project)
+        ),
+    )?;
+    let config = load_config_from_path(&config_path)?;
+    let state_dir = temp.path().join("state");
+    let log_dir = temp.path().join("logs");
+    // A backlog from before retention existed: 10 plans, each older than the one the
+    // upcoming cycle writes.
+    let plans_dir = state_dir.join("plans");
+    fs::create_dir_all(&plans_dir)?;
+    for index in 0..10 {
+        write_aged_file(
+            &plans_dir.join(format!("cargo-reclaim-legacy-{index}.json")),
+            &vec![b'x'; 4_096],
+            UNIX_EPOCH + Duration::from_secs(100 + index),
+        )?;
+    }
+    let mut clock = FakeClock::new([1_000, 1_100]);
+    let mut sleeper = FakeSleeper::default();
+    let mut runner = PlatformBackgroundServiceCycleRunner;
+
+    let summary = run_background_service_with_runtime(
+        BackgroundServiceOptions {
+            config_path,
+            state_dir: state_dir.clone(),
+            log_dir,
+            mode: None,
+            max_cycles: Some(1),
+        },
+        &config,
+        &mut clock,
+        &mut sleeper,
+        &mut runner,
+    )?;
+
+    assert_eq!(summary.cycles_completed, 1);
+    assert_eq!(summary.state.last_problem, None);
+    let remaining = plan_file_names(&plans_dir)?;
+    assert_eq!(remaining.len(), 2, "kept plans: {remaining:?}");
+    // The plan this run wrote survives, alongside the newest of the backlog.
+    assert!(remaining.contains(&"cargo-reclaim-19700101T001820Z.json".to_owned()));
+    assert!(remaining.contains(&"cargo-reclaim-legacy-9.json".to_owned()));
+    Ok(())
+}
+
+#[test]
+fn disabled_retention_keeps_every_plan() -> Result<(), Box<dyn Error>> {
+    let temp = TestTemp::new("background_service_retention_off")?;
+    let project = write_project(temp.path())?;
+    let config_path = write_config(
+        temp.path(),
+        &format!(
+            "roots = [{}]\n\
+             [background]\ncheck_every = \"1s\"\n\
+             [scheduler.retention]\nenabled = false\nkeep_plans = 2\n",
+            toml_string(&project)
+        ),
+    )?;
+    let config = load_config_from_path(&config_path)?;
+    let state_dir = temp.path().join("state");
+    let plans_dir = state_dir.join("plans");
+    fs::create_dir_all(&plans_dir)?;
+    for index in 0..4 {
+        write_aged_file(
+            &plans_dir.join(format!("cargo-reclaim-legacy-{index}.json")),
+            b"{}",
+            UNIX_EPOCH + Duration::from_secs(100 + index),
+        )?;
+    }
+    let mut clock = FakeClock::new([1_000, 1_100]);
+    let mut sleeper = FakeSleeper::default();
+    let mut runner = PlatformBackgroundServiceCycleRunner;
+
+    run_background_service_with_runtime(
+        BackgroundServiceOptions {
+            config_path,
+            state_dir: state_dir.clone(),
+            log_dir: temp.path().join("logs"),
+            mode: None,
+            max_cycles: Some(1),
+        },
+        &config,
+        &mut clock,
+        &mut sleeper,
+        &mut runner,
+    )?;
+
+    // Four seeded plans plus the one this run wrote.
+    assert_eq!(plan_file_names(&plans_dir)?.len(), 5);
+    Ok(())
+}
+
+#[test]
+fn service_rotates_an_oversized_run_log() -> Result<(), Box<dyn Error>> {
+    let temp = TestTemp::new("background_service_log_rotation")?;
+    let project = write_project(temp.path())?;
+    let config_path = write_config(
+        temp.path(),
+        &format!(
+            "roots = [{}]\n\
+             [background]\ncheck_every = \"1s\"\n\
+             [scheduler.retention]\nmax_log_size = \"4KiB\"\nkeep_rotated_logs = 1\n",
+            toml_string(&project)
+        ),
+    )?;
+    let config = load_config_from_path(&config_path)?;
+    let log_dir = temp.path().join("logs");
+    fs::create_dir_all(&log_dir)?;
+    let runs_log = log_dir.join("runs.jsonl");
+    fs::write(&runs_log, vec![b'x'; 8 * 1024])?;
+    let mut clock = FakeClock::new([1_000, 1_100]);
+    let mut sleeper = FakeSleeper::default();
+    let mut runner = PlatformBackgroundServiceCycleRunner;
+
+    run_background_service_with_runtime(
+        BackgroundServiceOptions {
+            config_path,
+            state_dir: temp.path().join("state"),
+            log_dir: log_dir.clone(),
+            mode: None,
+            max_cycles: Some(1),
+        },
+        &config,
+        &mut clock,
+        &mut sleeper,
+        &mut runner,
+    )?;
+
+    // Startup rotated the oversized log away; the cycle then wrote its records into
+    // a fresh one, so no run record was lost.
+    assert_eq!(
+        fs::metadata(runs_log.with_extension("jsonl.1"))?.len(),
+        8 * 1024
+    );
+    let records = read_background_run_log(&runs_log)?;
+    assert!(
+        records
+            .iter()
+            .any(|record| record.kind == BackgroundRunEventKind::Started)
+    );
+    Ok(())
+}
+
+fn plan_file_names(plans_dir: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut names = Vec::new();
+    for entry in fs::read_dir(plans_dir)? {
+        names.push(entry?.file_name().to_string_lossy().into_owned());
+    }
+    names.sort();
+    Ok(names)
+}
+
+fn write_aged_file(
+    path: &Path,
+    contents: &[u8],
+    modified: SystemTime,
+) -> Result<(), Box<dyn Error>> {
+    fs::write(path, contents)?;
+    let handle = fs::File::options().write(true).open(path)?;
+    handle.set_times(fs::FileTimes::new().set_modified(modified))?;
+    Ok(())
+}
+
 #[derive(Default)]
 struct FakeSleeper {
     sleeps: Vec<Duration>,

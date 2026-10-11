@@ -6,6 +6,12 @@
 # The OS matrix is load-bearing: cargo-reclaim has platform-specific active
 # process detection and scheduler artifact generation, so Linux, macOS, and
 # Windows must all compile and pass the public test suite.
+#
+# Every third-party action is pinned to a commit SHA. A tag is a mutable
+# pointer, so `@v6` is an unbounded trust grant to whoever can move it — for a
+# tool that deletes files on the user's machine, that is the supply chain to
+# lock down first. The comment after each SHA records the release it belongs
+# to; bumping means editing both.
 
 name: Test
 
@@ -17,18 +23,29 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # CI builds are single-shot, so incremental compilation only costs time and
+  # cache size, and debuginfo costs both heavily. Backtraces keep symbol names
+  # without it — only line numbers are lost.
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  # Registry blips are the most common spurious CI failure.
+  CARGO_NET_RETRY: 3
 
 jobs:
   format:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           prefix-key: format
       - name: Check formatting
@@ -38,57 +55,98 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           prefix-key: clippy
       - name: Clippy (warnings are errors)
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
   docs:
     name: Docs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           prefix-key: docs
       - name: Build docs
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --workspace --no-deps
+        run: cargo doc --locked --workspace --no-deps
 
   doctests:
     name: Doctests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           prefix-key: doctests
       - name: Doctests
-        run: cargo test --workspace --doc
+        run: cargo test --locked --workspace --doc
 
   package:
     name: Package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           prefix-key: package
       - name: Package check
         run: cargo package --locked
+
+  # `package.rust-version` is a published compatibility promise — crates.io and
+  # `cargo add` both enforce it against consumers — but nothing checks it while
+  # developing on stable, so it silently rots the first time a newer API is
+  # used. The version is read from Cargo.toml rather than repeated here, so
+  # raising the MSRV stays a one-line change. Compile-only: running the suite
+  # adds nothing the stable matrix below does not already cover.
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read MSRV from Cargo.toml
+        id: msrv
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          if [[ -z "$version" ]]; then
+            echo "::error::Cargo.toml has no rust-version; the MSRV gate has nothing to check"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Install Rust ${{ steps.msrv.outputs.version }}
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: msrv
+      - name: Check against the declared MSRV
+        run: cargo check --locked --workspace --all-targets --all-features
 
   test:
     name: Test (${{ matrix.os }})
@@ -98,11 +156,38 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-15, windows-latest]
     steps:
-      - uses: actions/checkout@v6
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          prefix-key: test
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: test-${{ matrix.os }}
+      # Single-threaded on purpose: the suite plans and applies against real
+      # temporary target directories, and the planner's active-build detection
+      # observes the machine's running cargo/rustc processes. Concurrent test
+      # threads change what those probes see, so parallelism makes results
+      # depend on timing.
       - name: Run tests
-        run: cargo test --workspace --no-fail-fast -- --test-threads=1
+        run: cargo test --locked --workspace --no-fail-fast -- --test-threads=1
+
+  # Dependency review. cargo-reclaim deletes files unattended, often with a
+  # whole home directory in scope, so a vulnerable or unexpectedly-licensed
+  # dependency is a release blocker rather than a note. `--exclude-dev` keeps
+  # the gate on what actually ships.
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: cargo-deny
+      - name: Run cargo-deny
+        run: cargo deny --exclude-dev check

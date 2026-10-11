@@ -1,0 +1,59 @@
+# cargo-deny configuration.
+#
+# Run locally: `cargo deny --exclude-dev check`
+# CI gate:     .github/workflows/test.yml :: audit job
+
+[graph]
+# Every target the release matrix ships a binary for. A vulnerable
+# Windows-only dependency that never resolves on Linux still reaches users.
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-gnu" },
+    { triple = "x86_64-apple-darwin" },
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-pc-windows-msvc" },
+]
+
+# ────────────────────────────────────────────────────────────────────────
+# Security advisories. cargo-reclaim deletes files on a schedule, unattended
+# and often with the user's full home directory in scope, so any RustSec
+# advisory against a dependency is a CI failure rather than a warning.
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # Add advisory IDs here with a comment explaining the exception, e.g.
+    # "RUSTSEC-YYYY-NNNN", # unreachable from our code paths; see #123
+]
+
+# ────────────────────────────────────────────────────────────────────────
+# Licenses — allow-list. Anything not listed fails CI.
+# Kept to what the dependency tree actually uses, so adding a license means a
+# deliberate review rather than finding it already waved through.
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+
+# ────────────────────────────────────────────────────────────────────────
+[bans]
+multiple-versions = "warn" # warn, not deny — common in transitive trees
+wildcards = "deny"         # no `foo = "*"` in our Cargo.toml
+highlight = "all"
+deny = []
+skip-tree = []
+
+# ────────────────────────────────────────────────────────────────────────
+# Where dependencies may come from. crates.io only — a git dependency is an
+# unreviewed, unversioned code path into a tool that deletes files.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -306,6 +306,39 @@ kill_active_builds = true           # SIGTERM -> 5s -> SIGKILL the cargo/rustc u
 
 So the example runs a safe trim every 30 minutes; escalates to `sweep` when free space dips under 10%; and, if it ever reaches 5% free, kills the offending builds and wipes their targets rather than let the disk hit 100%.
 
+### Saved Plan Format
+
+A saved plan is a machine-revalidated document, not a hand-edited one — `edit-plan` reads and rewrites it, and `apply` revalidates it against the filesystem before deleting anything. It is written compactly, with the values that repeat across entries (directories, artifact classes, actions, policy reasons, evidence) hoisted into a `dictionaries` table that entries index into. Decoding rejects an out-of-range index rather than guessing, so a plan that cannot be reconstructed exactly is never applied. To read a plan with `jq`, resolve the indexes through `.plan.dictionaries`, or use `edit-plan --list --json`, which prints entries fully expanded.
+
+Plans written by the **background service** additionally summarize active-build skips. When a build is touching a target, the planner protects that target wholesale but records the verdict on every file inside it; those entries are never actionable, and on a busy workspace they are the overwhelming majority of the document. The service therefore writes one `active_skips` entry per target (`target`, `entry_count`, `total_bytes`, `reasons`) instead. `totals` still counts every entry the planner produced. Plans you save yourself with `--save-plan` keep every entry, so `edit-plan` can still reselect anything the planner protected.
+
+Measured on a 78,928-entry plan over a multi-project workspace:
+
+| | size |
+|---|---|
+| previous format | 59.0 MB |
+| current format, every entry kept (`--save-plan`) | 19.7 MB |
+| current format, background service audit plan | 0.67 MB |
+
+### State Retention
+
+Every background cycle writes a plan snapshot to `<state_dir>/plans/` and appends to `<log_dir>/runs.jsonl`, and each terminal `apply` writes a report to `<state_dir>/reports/`. A plan for a large workspace records every candidate path, so a single snapshot can reach hundreds of megabytes — left unbounded, a frequent trigger fills the disk that cargo-reclaim exists to free.
+
+The service therefore enforces retention budgets on its own state, pruning at startup and after every cycle. The defaults apply with no configuration:
+
+```toml
+[scheduler.retention]
+keep_plans = 32           # plan snapshots kept; 0 disables the count budget
+max_plan_age = "14d"      # age gate for plan snapshots and apply reports
+max_plans_size = "1 GiB"  # total size budget for the plans directory
+keep_reports = 32         # terminal `apply` reports kept; 0 disables the count budget
+max_log_size = "64 MiB"   # size at which runs.jsonl / scheduler.log rotate
+keep_rotated_logs = 2     # rotated generations kept (runs.jsonl.1, runs.jsonl.2)
+enabled = true            # false keeps every state file forever
+```
+
+Pruning is newest-first and never removes the most recent plan, so the audit record for the last run always survives — even when it alone exceeds `max_plans_size`. Logs rotate rather than truncate, so a writer holding the old file descriptor cannot lose a record mid-line. Retention is housekeeping: if pruning fails (read-only mount, permission change) the cycle still runs and the failure is reported in `scheduler service status`.
+
 > **Deprecated (to be removed in a future release):** the flat `[background]` keys `mode`, `check_every`, `only_when_disk_free_below`, and `min_free_disk` are still accepted and normalized into a single trigger, with a warning. Migrate to `[[background.trigger]]` blocks.
 
 ## Platform Notes
