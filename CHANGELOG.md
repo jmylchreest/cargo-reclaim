@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). cargo-r
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- Require the conventional `target` directory name before accepting generic `CACHEDIR.TAG` evidence. Custom Cargo output directories remain supported through Cargo configuration or `.rustc_info.json`.
+
+---
+
 ## [0.5.0] - 2026-07-22
 
 ### Added
