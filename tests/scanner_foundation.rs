@@ -483,3 +483,19 @@ impl Drop for TestTemp {
         let _ = fs::remove_dir_all(&self.path);
     }
 }
+
+#[test]
+fn generic_cache_marker_does_not_make_a_non_target_directory_a_cargo_target()
+-> Result<(), Box<dyn Error>> {
+    let temp = TestTemp::new("non_cargo_cache")?;
+    let cache = temp.path().join("python-cache");
+    fs::create_dir(&cache)?;
+    fs::write(
+        cache.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )?;
+    let candidate = classify_target_candidate(&cache, None, None, &ScannerOptions::default())?;
+    assert!(candidate.evidence.is_none());
+    assert!(candidate.skip_reason.is_some());
+    Ok(())
+}

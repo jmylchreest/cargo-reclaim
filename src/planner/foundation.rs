@@ -19,6 +19,25 @@ pub(super) fn plan_candidate_for_policy(
     active_observation: &ActiveObservation,
     now: SystemTime,
 ) -> ReclaimResult<PlanEntry> {
+    // Stamped once here rather than at each of the decision returns below, so no
+    // future branch can forget it.
+    let target_root = candidate
+        .target_context
+        .as_ref()
+        .map(|context| context.target_root.clone());
+    Ok(
+        decide_candidate(policy, candidate, options, active_observation, now)?
+            .with_target_root(target_root),
+    )
+}
+
+fn decide_candidate(
+    policy: PolicyKind,
+    candidate: PlannerCandidate,
+    options: &PlannerOptions,
+    active_observation: &ActiveObservation,
+    now: SystemTime,
+) -> ReclaimResult<PlanEntry> {
     let PlannerCandidate {
         snapshot,
         artifact_class,

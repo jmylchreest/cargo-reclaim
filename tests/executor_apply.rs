@@ -346,6 +346,7 @@ fn apply_preserves_an_unchanged_candidate_when_its_target_has_new_writes()
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn apply_honors_relative_exclusions_during_recent_write_revalidation() -> Result<(), Box<dyn Error>>
 {

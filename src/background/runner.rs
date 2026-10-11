@@ -11,7 +11,7 @@ use crate::integration::build_plan_from_roots_with_active_observation_provider;
 use crate::inventory::InventoryOptions;
 use crate::persistence::{
     PersistedTimestamp, PlanCommandKind, PlanId, PlanInvocation, PlanPersistenceError,
-    SavePlanOptions, persist_plan, save_plan_to_path,
+    SavePlanOptions, persist_audit_plan, save_plan_to_path,
 };
 use crate::planner::PlannerOptions;
 use crate::policy::PolicyKind;
@@ -200,7 +200,7 @@ fn run_after_started(
     .map_err(|source| failure(&request, BackgroundRunnerError::BuildPlan(source)))?;
 
     let invocation = plan_invocation(&request, &planner_options);
-    let document = persist_plan(
+    let document = persist_audit_plan(
         &plan,
         SavePlanOptions {
             created_at: request.created_at,

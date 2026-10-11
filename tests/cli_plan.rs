@@ -479,7 +479,7 @@ fn plan_save_plan_writes_persisted_document() -> Result<(), Box<dyn Error>> {
             .is_file()
     );
     let persisted: Value = serde_json::from_slice(&fs::read(&plan_path)?)?;
-    assert_eq!(persisted["schema_version"], 1);
+    assert_eq!(persisted["schema_version"], 2);
     assert!(
         persisted["id"]
             .as_str()
@@ -498,10 +498,9 @@ fn plan_save_plan_writes_persisted_document() -> Result<(), Box<dyn Error>> {
                 .expect("created_at unix_seconds"),
         30 * 60
     );
-    assert_eq!(
-        persisted["plan"]["entries"][0]["artifact_class"],
-        "incremental"
-    );
+    // Entries are dictionary-encoded on disk, so assert on the decoded document.
+    let decoded = cargo_reclaim::load_plan_from_path(&plan_path)?;
+    assert_eq!(decoded.body.plan.entries[0].artifact_class, "incremental");
     Ok(())
 }
 
@@ -530,7 +529,10 @@ fn save_plan_records_recent_write_keep_window() -> Result<(), Box<dyn Error>> {
         persisted["invocation"]["planner_options"]["recent_write_keep_window_seconds"],
         30 * 60
     );
-    assert_eq!(persisted["plan"]["entries"][0]["action"], "skip_active");
+    // A user-saved plan keeps every entry so `edit-plan` can still reselect them.
+    let decoded = cargo_reclaim::load_plan_from_path(&plan_path)?;
+    assert_eq!(decoded.body.plan.entries[0].action, "skip_active");
+    assert!(decoded.body.plan.active_skips.is_empty());
     Ok(())
 }
 
@@ -575,7 +577,8 @@ fn save_plan_records_keep_days_and_keep_size() -> Result<(), Box<dyn Error>> {
         persisted["invocation"]["planner_options"]["keep_rustc_hashes"],
         serde_json::json!([7, 8])
     );
-    assert_eq!(persisted["plan"]["entries"][0]["action"], "skip_active");
+    let decoded = cargo_reclaim::load_plan_from_path(&plan_path)?;
+    assert_eq!(decoded.body.plan.entries[0].action, "skip_active");
     Ok(())
 }
 
@@ -665,10 +668,8 @@ fn json_output_can_be_combined_with_save_plan() -> Result<(), Box<dyn Error>> {
     assert_eq!(stdout["command"], "plan");
     assert_eq!(persisted["invocation"]["command"], "plan");
     assert_eq!(stdout["entries"][0]["artifact_class"], "incremental");
-    assert_eq!(
-        persisted["plan"]["entries"][0]["artifact_class"],
-        "incremental"
-    );
+    let decoded = cargo_reclaim::load_plan_from_path(&plan_path)?;
+    assert_eq!(decoded.body.plan.entries[0].artifact_class, "incremental");
     Ok(())
 }
 

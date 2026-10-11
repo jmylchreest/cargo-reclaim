@@ -8,9 +8,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). cargo-r
 
 ## [Unreleased]
 
+### Security
+
+- Updated `crossbeam-epoch` to 0.9.20 for RUSTSEC-2026-0204 (invalid pointer dereference in the `fmt::Pointer` impl), reached transitively through `rayon`.
+- Every third-party GitHub Action is pinned to a commit SHA instead of a mutable tag, and checkouts no longer persist the workflow token into `.git/config`.
+- New `deny.toml` and CI audit job: `cargo deny --exclude-dev check` gates advisories, an allow-listed license set, and crates.io-only sources on every PR and release.
+
 ### Fixed
 
 - Recheck build processes and target-wide recent writes before applying a saved build-artifact plan. Preserve candidates when their target became active after planning. This is an apply-time check, not a Cargo build lock.
+- Require the conventional `target` directory name before accepting generic `CACHEDIR.TAG` evidence. Custom Cargo output directories remain supported through Cargo configuration or `.rustc_info.json`.
+
+- The scheduler service never pruned its own state, so plans, reports, and run logs grew unbounded — on a large workspace a plan snapshot reaches hundreds of megabytes, so a 5-minute trigger wrote gigabytes per hour. The service now prunes at startup (clearing any existing backlog) and after every cycle; terminal `apply` prunes the reports directory it writes to.
+
+### Changed
+
+- Saved plans are compact and dictionary-encoded: values repeated across entries live once in `plan.dictionaries`, which entries index into. Background-service plans additionally summarize active-build skips as one `active_skips` record per target; `--save-plan` still writes every entry, and `totals` always counts them all. On a 78,928-entry plan: 59.0 MB → 19.7 MB, or 0.67 MB for a service plan.
+- `PERSISTED_PLAN_SCHEMA_VERSION` is now 2; version-1 plans are rejected rather than migrated. Regenerate them.
+
+### Added
+
+- CI job enforcing the MSRV declared in `Cargo.toml` (`rust-version`), which nothing checked before.
+- `persist_audit_plan` for writing a plan as a run record rather than an editable document.
+- `[scheduler.retention]`: `keep_plans` (32), `max_plan_age` (14d), `max_plans_size` (1 GiB), `keep_reports` (32), `max_log_size` (64 MiB, rotates `runs.jsonl` and `scheduler.log`), `keep_rotated_logs` (2), `enabled`. Defaults apply without config changes; `0` disables a count budget, `enabled = false` disables retention. Pruning is newest-first and always keeps the most recent plan; a prune failure is reported by `scheduler service status` instead of stopping the run.
 
 ---
 

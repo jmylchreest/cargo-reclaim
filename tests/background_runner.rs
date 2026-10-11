@@ -230,6 +230,7 @@ fn failure_after_start_appends_failed_record() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn disruptive_background_apply_preserves_immediate_request_intent() -> Result<(), Box<dyn Error>> {
     let temp = TestTemp::new("background_disruptive")?;
@@ -255,6 +256,7 @@ fn disruptive_background_apply_preserves_immediate_request_intent() -> Result<()
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn saved_disruptive_plan_does_not_authorize_bypassing_activity_checks() -> Result<(), Box<dyn Error>>
 {

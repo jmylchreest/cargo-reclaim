@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::background::StateRetentionPolicy;
+
 use super::error::ConfigError;
 use super::parse::{
     BackgroundDocument, ConfigDocument, PlannerConfig, PolicyConfig, TriggerDocument,
@@ -97,6 +99,10 @@ impl ReclaimConfig {
             .map(PolicyThresholdConfig::from_document)
             .transpose()?
             .unwrap_or_default();
+        let scheduler = scheduler.unwrap_or_default().resolve_paths(relative_base);
+        // Surface a malformed retention budget at load time rather than mid-run,
+        // when the service is already holding the lock.
+        scheduler.retention.resolve()?;
         let background = background
             .map(|document| {
                 BackgroundConfig::from_document(
@@ -134,7 +140,7 @@ impl ReclaimConfig {
             policy_thresholds,
             background,
             scanner: scanner.unwrap_or_default(),
-            scheduler: scheduler.unwrap_or_default().resolve_paths(relative_base),
+            scheduler,
             recent_write_keep_window: planner_recent_write_keep_window
                 .or(planner_keep_days_window)
                 .or(policy_keep_recent_projects),
@@ -401,6 +407,8 @@ pub struct SchedulerConfig {
     pub allow_unattended_high_policy: Option<bool>,
     pub state_dir: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub retention: SchedulerRetentionConfig,
 }
 
 impl SchedulerConfig {
@@ -412,5 +420,68 @@ impl SchedulerConfig {
             .log_dir
             .map(|path| resolve_config_path(path, relative_base));
         self
+    }
+}
+
+/// `[scheduler.retention]` — how much of the service's own state (plan snapshots,
+/// apply reports, run logs) is kept. Every budget has a default, so an existing
+/// config with no `[scheduler.retention]` block is still bounded.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchedulerRetentionConfig {
+    /// Set `false` to keep every state file forever. The directories then grow
+    /// without bound; only do this when something external prunes them.
+    pub enabled: Option<bool>,
+    /// Plan snapshots kept. `0` disables the count budget.
+    pub keep_plans: Option<usize>,
+    /// Age past which a plan snapshot or apply report is pruned, e.g. `"14d"`.
+    pub max_plan_age: Option<String>,
+    /// Total size the plans directory may occupy, e.g. `"1GiB"`. A single plan for a
+    /// large workspace can be hundreds of megabytes, so this is usually the budget
+    /// that binds.
+    pub max_plans_size: Option<String>,
+    /// Terminal `apply` reports kept. `0` disables the count budget.
+    pub keep_reports: Option<usize>,
+    /// Size at which `runs.jsonl` and `scheduler.log` are rotated, e.g. `"64MiB"`.
+    pub max_log_size: Option<String>,
+    /// Rotated log generations kept (`runs.jsonl.1`, …). `0` discards on rotation.
+    pub keep_rotated_logs: Option<usize>,
+}
+
+impl SchedulerRetentionConfig {
+    /// Resolve into the policy the service enforces, applying defaults for every
+    /// budget the config leaves out.
+    pub fn resolve(&self) -> Result<StateRetentionPolicy, ConfigError> {
+        let defaults = StateRetentionPolicy::default();
+        if !self.enabled.unwrap_or(true) {
+            return Ok(StateRetentionPolicy::disabled());
+        }
+        Ok(StateRetentionPolicy {
+            enabled: true,
+            keep_plans: budget_count(self.keep_plans, defaults.keep_plans),
+            max_plan_age: match self.max_plan_age.as_deref() {
+                Some(value) => Some(parse_config_duration(value)?),
+                None => defaults.max_plan_age,
+            },
+            max_plans_bytes: match self.max_plans_size.as_deref() {
+                Some(value) => Some(parse_config_size(value)?),
+                None => defaults.max_plans_bytes,
+            },
+            keep_reports: budget_count(self.keep_reports, defaults.keep_reports),
+            max_log_bytes: match self.max_log_size.as_deref() {
+                Some(value) => Some(parse_config_size(value)?),
+                None => defaults.max_log_bytes,
+            },
+            keep_rotated_logs: self.keep_rotated_logs.unwrap_or(defaults.keep_rotated_logs),
+        })
+    }
+}
+
+/// `0` means "no count budget"; an omitted key means "use the default".
+fn budget_count(configured: Option<usize>, default: Option<usize>) -> Option<usize> {
+    match configured {
+        Some(0) => None,
+        Some(count) => Some(count),
+        None => default,
     }
 }

@@ -18,6 +18,7 @@ use fs2::FileExt;
 /// after SIGTERM before it is SIGKILLed.
 const KILL_ACTIVE_BUILD_GRACE: Duration = Duration::from_secs(5);
 
+use super::retention::{StateRetentionPolicy, prune_service_state};
 use super::{BackgroundRunReport, BackgroundRunRequest, run_background_cleanup_cycle};
 use request::{BackgroundCycleRequestContext, scheduler_mode_from_config};
 
@@ -94,8 +95,18 @@ pub fn run_background_service_with_runtime(
     let _lock = ServiceLock::acquire(&paths.lock_path)?;
     ensure_service_dirs(&paths)?;
 
-    let started_at = persisted_timestamp(clock.now())?;
+    let retention = config
+        .scheduler
+        .retention
+        .resolve()
+        .map_err(|error| BackgroundServiceError::Config(error.to_string()))?;
+    let start_time = clock.now();
+    let started_at = persisted_timestamp(start_time)?;
     let mut state = BackgroundServiceState::running(started_at);
+    // Prune before the first cycle so a service that ran unbounded before this
+    // version — or was stopped while its state directory was over budget — comes
+    // back inside the budget immediately instead of only after the next run.
+    apply_state_retention(&paths, &retention, start_time, &mut state);
     write_background_service_state(&paths.state_path, &state)?;
 
     let request_context = BackgroundCycleRequestContext::from_config(
@@ -172,6 +183,9 @@ pub fn run_background_service_with_runtime(
             schedule.next_at = Some(now + schedule.every);
             state.last_run_id = Some(run_id);
             state.last_run_at = Some(persisted_timestamp(now)?);
+            // The plan for this run is on disk now, so prune before sleeping: the
+            // state directory is never left over budget between cycles.
+            apply_state_retention(&paths, &retention, now, &mut state);
 
             if options
                 .max_cycles
@@ -434,6 +448,28 @@ fn stale_service_state(mut state: BackgroundServiceState, problem: &str) -> Back
     state.next_run_at = None;
     state.last_problem = Some(problem.to_owned());
     state
+}
+
+/// Enforce the state retention budgets, recording any failure in the service state
+/// instead of propagating it. Retention is housekeeping: a state directory that
+/// cannot be pruned (a read-only mount, a permission change) must not stop the
+/// service from reclaiming build artifacts, which is the job it exists to do.
+fn apply_state_retention(
+    paths: &BackgroundServicePaths,
+    policy: &StateRetentionPolicy,
+    now: SystemTime,
+    state: &mut BackgroundServiceState,
+) {
+    let result = prune_service_state(
+        &paths.plans_dir,
+        &paths.reports_dir,
+        &[&paths.runs_log_path, &paths.scheduler_log_path],
+        policy,
+        now,
+    );
+    if let Err(error) = result {
+        state.last_problem = Some(format!("state retention failed: {error}"));
+    }
 }
 
 fn ensure_service_dirs(paths: &BackgroundServicePaths) -> BackgroundServiceResult<()> {

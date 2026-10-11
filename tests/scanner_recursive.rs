@@ -329,3 +329,26 @@ fn test_lock() -> Result<std::sync::MutexGuard<'static, ()>, Box<dyn Error>> {
         .lock()
         .map_err(|_| std::io::Error::other("env lock poisoned").into())
 }
+
+#[test]
+fn recursive_scan_preserves_non_cargo_cache_contents() -> Result<(), Box<dyn Error>> {
+    let _test_guard = test_lock()?;
+    let temp = TestTemp::new("recursive_non_cargo_cache")?;
+    let cache = temp.path().join("python-cache");
+    let valuable = cache.join("release/deps/valuable.txt");
+    fs::create_dir_all(valuable.parent().expect("parent"))?;
+    fs::write(
+        cache.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )?;
+    fs::write(&valuable, "user data")?;
+    let plan = cargo_reclaim::build_plan_from_roots(
+        [temp.path()],
+        cargo_reclaim::PolicyKind::Balanced,
+        &ScannerOptions::default(),
+        &cargo_reclaim::InventoryOptions::default(),
+    )?;
+    assert_eq!(plan.totals.delete_candidate_count, 0);
+    assert_eq!(fs::read_to_string(valuable)?, "user data");
+    Ok(())
+}
