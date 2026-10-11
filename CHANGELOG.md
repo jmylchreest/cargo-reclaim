@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). cargo-r
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- Recheck build processes and target-wide recent writes before applying a saved build-artifact plan. Preserve candidates when their target became active after planning. This is an apply-time check, not a Cargo build lock.
+
+---
+
 ## [0.5.0] - 2026-07-22
 
 ### Added

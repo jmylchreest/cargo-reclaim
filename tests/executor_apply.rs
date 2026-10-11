@@ -312,6 +312,40 @@ fn apply_execution_reports_delete_failures() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[test]
+fn apply_preserves_an_unchanged_candidate_when_its_target_has_new_writes()
+-> Result<(), Box<dyn Error>> {
+    let temp = TestTemp::new("apply_target_new_writes")?;
+    let target = temp.path.join("target");
+    let file = target.join("debug/deps/libsample-0123456789abcdef.rlib");
+    fs::create_dir_all(file.parent().expect("parent"))?;
+    fs::write(target.join(".rustc_info.json"), "{}")?;
+    fs::write(&file, b"abc")?;
+    let old = SystemTime::now() - Duration::from_secs(14 * 86400);
+    fs::File::open(&file)?.set_modified(old)?;
+    let mut document = persisted_plan_for_path(&file, 3)?;
+    document.body.plan.input.roots = vec![temp.path.to_string_lossy().into_owned()];
+    document
+        .body
+        .invocation
+        .planner_options
+        .recent_write_keep_window_seconds = Some(7 * 86400);
+    document.body.created_at = cargo_reclaim::PersistedTimestamp::from_system_time(old)?;
+    document.body.expires_at = cargo_reclaim::PersistedTimestamp::from_system_time(
+        SystemTime::now() + Duration::from_secs(3600),
+    )?;
+    document.id = PlanId::from_body(&document.body)?;
+    fs::write(target.join("debug/deps/new-build.o"), b"new build output")?;
+
+    let validation = validate_persisted_plan_for_apply(&document, SystemTime::now())?;
+    assert_eq!(validation.totals.would_delete_count, 0);
+    let report = execute_persisted_plan_apply(&document, SystemTime::now())?;
+    assert_eq!(report.totals.applied_count, 0);
+    assert_eq!(report.totals.stale_skip_count, 1);
+    assert_eq!(fs::read(&file)?, b"abc");
+    Ok(())
+}
+
 fn persisted_plan_for_path(
     path: impl Into<PathBuf>,
     size_bytes: u64,
