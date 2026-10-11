@@ -124,7 +124,9 @@ pub(crate) fn classify_target_candidate_with_overrides(
         ));
     }
 
-    if path.join(CACHEDIR_TAG).is_file() {
+    if path.file_name().is_some_and(|name| name == TARGET_DIR_NAME)
+        && path.join(CACHEDIR_TAG).is_file()
+    {
         return Ok(TargetCandidate::candidate(
             path.to_path_buf(),
             TargetCandidateKind::CargoTargetDir,
