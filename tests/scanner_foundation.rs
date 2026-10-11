@@ -448,8 +448,25 @@ fn env_for(temp: &std::path::Path) -> Vec<(String, String)> {
 
 fn workspace_root_template_path(path: &std::path::Path) -> String {
     path.to_string_lossy()
+        // Canonical Windows paths carry a verbatim prefix. Template expansion
+        // embeds the drive path, which lexical normalization treats separately.
+        .trim_start_matches(r"\\?\")
         .trim_start_matches('/')
         .replace(":\\", ":")
+}
+
+#[test]
+fn workspace_root_template_expectation_handles_windows_verbatim_prefix() {
+    let normal = std::path::Path::new(r"C:\Users\runner\project");
+    let verbatim = std::path::Path::new(r"\\?\C:\Users\runner\project");
+    assert_eq!(
+        workspace_root_template_path(normal),
+        r"C:Users\runner\project"
+    );
+    assert_eq!(
+        workspace_root_template_path(verbatim),
+        workspace_root_template_path(normal)
+    );
 }
 
 fn write_manifest(path: &std::path::Path) -> Result<(), Box<dyn Error>> {
