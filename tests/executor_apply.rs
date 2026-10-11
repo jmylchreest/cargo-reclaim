@@ -338,6 +338,32 @@ fn apply_rejects_a_symlink_substituted_for_an_ancestor() -> Result<(), Box<dyn E
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn apply_requires_real_paths_when_a_parent_is_already_symlinked() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::symlink;
+
+    let temp = TestTemp::new("apply_real_path")?;
+    let real = temp.path.join("real");
+    fs::create_dir(&real)?;
+    let alias = temp.path.join("alias");
+    symlink(&real, &alias)?;
+    let file = alias.join("cache.bin");
+    fs::write(&file, b"abc")?;
+    let now = UNIX_EPOCH + Duration::from_secs(1_100);
+
+    let aliased_plan = persisted_plan_for_path(&file, 3)?;
+    let report = execute_persisted_plan_apply(&aliased_plan, now)?;
+    assert_eq!(report.totals.stale_skip_count, 1);
+    assert!(file.exists());
+
+    let real_plan = persisted_plan_for_path(file.canonicalize()?, 3)?;
+    let report = execute_persisted_plan_apply(&real_plan, now)?;
+    assert_eq!(report.totals.applied_count, 1);
+    assert!(!file.exists());
+    Ok(())
+}
+
 fn persisted_plan_for_path(
     path: impl Into<PathBuf>,
     size_bytes: u64,
@@ -463,7 +489,7 @@ struct TestTemp {
 impl TestTemp {
     fn new(name: &str) -> Result<Self, Box<dyn Error>> {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let path = std::env::temp_dir().join(format!(
+        let path = std::env::temp_dir().canonicalize()?.join(format!(
             "cargo_reclaim_{name}_{}_{}",
             std::process::id(),
             unique
