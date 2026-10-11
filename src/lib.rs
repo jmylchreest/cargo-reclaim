@@ -9,6 +9,7 @@ pub mod executor;
 pub mod integration;
 pub mod inventory;
 pub mod model;
+mod path_safety;
 pub mod persistence;
 pub mod plan_edit;
 pub mod planner;

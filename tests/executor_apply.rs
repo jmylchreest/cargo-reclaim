@@ -400,6 +400,58 @@ fn apply_honors_relative_exclusions_during_recent_write_revalidation() -> Result
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn apply_rejects_a_symlink_substituted_for_an_ancestor() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::symlink;
+
+    let temp = TestTemp::new("apply_parent_symlink")?;
+    let target = temp.path.join("target");
+    let file = target.join("debug/incremental/cache.bin");
+    fs::create_dir_all(file.parent().expect("file parent"))?;
+    fs::write(&file, b"abc")?;
+    let document = persisted_plan_for_path(&file, 3)?;
+    let outside = temp.path.join("outside-target");
+    fs::rename(target.join("debug"), &outside)?;
+    symlink(&outside, target.join("debug"))?;
+
+    let now = UNIX_EPOCH + Duration::from_secs(1_100);
+    let validation = validate_persisted_plan_for_apply(&document, now)?;
+    assert_eq!(validation.totals.stale_skip_count, 1);
+    let report = execute_persisted_plan_apply(&document, now)?;
+    assert_eq!(report.totals.applied_count, 0);
+    assert_eq!(report.totals.stale_skip_count, 1);
+    assert!(report.entries[0].reason.contains("symlink"));
+    assert_eq!(fs::read(outside.join("incremental/cache.bin"))?, b"abc");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_requires_real_paths_when_a_parent_is_already_symlinked() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::symlink;
+
+    let temp = TestTemp::new("apply_real_path")?;
+    let real = temp.path.join("real");
+    fs::create_dir(&real)?;
+    let alias = temp.path.join("alias");
+    symlink(&real, &alias)?;
+    let file = alias.join("cache.bin");
+    fs::write(&file, b"abc")?;
+    let now = UNIX_EPOCH + Duration::from_secs(1_100);
+
+    let aliased_plan = persisted_plan_for_path(&file, 3)?;
+    let report = execute_persisted_plan_apply(&aliased_plan, now)?;
+    assert_eq!(report.totals.stale_skip_count, 1);
+    assert!(file.exists());
+
+    let real_plan = persisted_plan_for_path(file.canonicalize()?, 3)?;
+    let report = execute_persisted_plan_apply(&real_plan, now)?;
+    assert_eq!(report.totals.applied_count, 1);
+    assert!(!file.exists());
+    Ok(())
+}
+
 fn persisted_plan_for_path(
     path: impl Into<PathBuf>,
     size_bytes: u64,
@@ -525,7 +577,7 @@ struct TestTemp {
 impl TestTemp {
     fn new(name: &str) -> Result<Self, Box<dyn Error>> {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let path = std::env::temp_dir().join(format!(
+        let path = std::env::temp_dir().canonicalize()?.join(format!(
             "cargo_reclaim_{name}_{}_{}",
             std::process::id(),
             unique

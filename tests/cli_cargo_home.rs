@@ -504,7 +504,7 @@ struct TestTemp {
 impl TestTemp {
     fn new(name: &str) -> Result<Self, Box<dyn Error>> {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let path = std::env::temp_dir().join(format!(
+        let path = std::env::temp_dir().canonicalize()?.join(format!(
             "cargo_reclaim_{name}_{}_{}",
             std::process::id(),
             unique

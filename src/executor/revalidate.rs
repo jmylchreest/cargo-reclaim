@@ -92,6 +92,8 @@ fn revalidate_entry_snapshot(entry: &PersistedPlanEntry) -> Result<(), String> {
 
 fn revalidate_snapshot(snapshot: &PersistedPathSnapshot) -> Result<(), String> {
     let path = Path::new(&snapshot.path);
+    crate::path_safety::reject_symlink_ancestors(path)
+        .map_err(|reason| format!("skip_stale_plan: {reason}"))?;
     let metadata = fs::symlink_metadata(path).map_err(|error| {
         format!(
             "skip_stale_plan: failed to read path metadata for {}: {error}",
@@ -237,6 +239,8 @@ fn revalidate_whole_target(entry: &PersistedPlanEntry) -> Result<(), String> {
 }
 
 fn remove_path(path: &Path) -> Result<(), String> {
+    crate::path_safety::reject_symlink_ancestors(path)
+        .map_err(|reason| format!("delete_failed: {reason}"))?;
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("delete_failed: failed to read path metadata: {error}"))?;
 
