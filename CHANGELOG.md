@@ -16,6 +16,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). cargo-r
 
 ### Fixed
 
+- Reject symlink ancestors when validating and deleting saved build-artifact plans, so a replaced parent directory cannot redirect a previously planned deletion. This check does not make concurrent path resolution and deletion atomic.
 - Require the conventional `target` directory name before accepting generic `CACHEDIR.TAG` evidence. Custom Cargo output directories remain supported through Cargo configuration or `.rustc_info.json`.
 
 - The scheduler service never pruned its own state, so plans, reports, and run logs grew unbounded — on a large workspace a plan snapshot reaches hundreds of megabytes, so a 5-minute trigger wrote gigabytes per hour. The service now prunes at startup (clearing any existing backlog) and after every cycle; terminal `apply` prunes the reports directory it writes to.
