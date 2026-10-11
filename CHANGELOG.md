@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). cargo-r
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- Reject symlink ancestors when validating and deleting saved build-artifact plans, so a replaced parent directory cannot redirect a previously planned deletion. This check does not make concurrent path resolution and deletion atomic.
+
+---
+
 ## [0.5.0] - 2026-07-22
 
 ### Added

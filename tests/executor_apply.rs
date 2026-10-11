@@ -312,6 +312,32 @@ fn apply_execution_reports_delete_failures() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn apply_rejects_a_symlink_substituted_for_an_ancestor() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::symlink;
+
+    let temp = TestTemp::new("apply_parent_symlink")?;
+    let target = temp.path.join("target");
+    let file = target.join("debug/incremental/cache.bin");
+    fs::create_dir_all(file.parent().expect("file parent"))?;
+    fs::write(&file, b"abc")?;
+    let document = persisted_plan_for_path(&file, 3)?;
+    let outside = temp.path.join("outside-target");
+    fs::rename(target.join("debug"), &outside)?;
+    symlink(&outside, target.join("debug"))?;
+
+    let now = UNIX_EPOCH + Duration::from_secs(1_100);
+    let validation = validate_persisted_plan_for_apply(&document, now)?;
+    assert_eq!(validation.totals.stale_skip_count, 1);
+    let report = execute_persisted_plan_apply(&document, now)?;
+    assert_eq!(report.totals.applied_count, 0);
+    assert_eq!(report.totals.stale_skip_count, 1);
+    assert!(report.entries[0].reason.contains("symlink"));
+    assert_eq!(fs::read(outside.join("incremental/cache.bin"))?, b"abc");
+    Ok(())
+}
+
 fn persisted_plan_for_path(
     path: impl Into<PathBuf>,
     size_bytes: u64,
