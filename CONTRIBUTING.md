@@ -59,6 +59,13 @@ cargo test -q -- --test-threads=1
 git diff --check
 ```
 
+When you change dependencies, also run the audit CI gates:
+
+```sh
+cargo deny --exclude-dev check   # advisories, licenses, sources
+cargo check --all-targets        # on the MSRV in Cargo.toml's rust-version
+```
+
 For documentation-only changes, run at least:
 
 ```sh

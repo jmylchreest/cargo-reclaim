@@ -2,7 +2,7 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use cargo_reclaim::{WholeTargetConfig, parse_config};
+use cargo_reclaim::{ConfigError, StateRetentionPolicy, WholeTargetConfig, parse_config};
 
 #[test]
 fn reclaim_example_config_parses_through_the_real_config_parser() -> Result<(), Box<dyn Error>> {
@@ -43,6 +43,18 @@ fn reclaim_example_config_parses_through_the_real_config_parser() -> Result<(), 
     assert_eq!(config.scheduler.allow_unattended_high_policy, Some(false));
     assert_eq!(config.scheduler.state_dir, Some("state".into()));
     assert_eq!(config.scheduler.log_dir, Some("logs".into()));
+
+    let retention = config.scheduler.retention.resolve()?;
+    assert!(retention.enabled);
+    assert_eq!(retention.keep_plans, Some(32));
+    assert_eq!(
+        retention.max_plan_age,
+        Some(Duration::from_secs(14 * 24 * 60 * 60))
+    );
+    assert_eq!(retention.max_plans_bytes, Some(1024 * 1024 * 1024));
+    assert_eq!(retention.keep_reports, Some(32));
+    assert_eq!(retention.max_log_bytes, Some(64 * 1024 * 1024));
+    assert_eq!(retention.keep_rotated_logs, 2);
     assert_eq!(config.background.enabled, Some(false));
     assert_eq!(
         config.background.target_free_disk_bytes,
@@ -75,4 +87,38 @@ fn reclaim_example_config_parses_through_the_real_config_parser() -> Result<(), 
     assert!(config.deprecations.is_empty());
 
     Ok(())
+}
+
+#[test]
+fn retention_defaults_apply_without_a_retention_block() -> Result<(), Box<dyn Error>> {
+    let config = parse_config("version = 1\n")?;
+
+    let retention = config.scheduler.retention.resolve()?;
+
+    assert_eq!(retention, StateRetentionPolicy::default());
+    assert!(retention.enabled, "state files are bounded by default");
+    Ok(())
+}
+
+#[test]
+fn retention_can_disable_individual_count_budgets() -> Result<(), Box<dyn Error>> {
+    let config = parse_config(
+        "version = 1\n[scheduler.retention]\nkeep_plans = 0\nmax_plans_size = \"2 GiB\"\n",
+    )?;
+
+    let retention = config.scheduler.retention.resolve()?;
+
+    assert_eq!(retention.keep_plans, None);
+    assert_eq!(retention.max_plans_bytes, Some(2 * 1024 * 1024 * 1024));
+    // Budgets left out keep their defaults.
+    assert_eq!(retention.keep_reports, Some(32));
+    Ok(())
+}
+
+#[test]
+fn a_malformed_retention_budget_fails_at_load_time() {
+    let error = parse_config("version = 1\n[scheduler.retention]\nmax_plans_size = \"1 EiB\"\n")
+        .expect_err("invalid size should not parse");
+
+    assert!(matches!(error, ConfigError::InvalidSize(_)), "{error}");
 }

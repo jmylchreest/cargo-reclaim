@@ -6,8 +6,9 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cargo_reclaim::{
-    ApplyEntryResult, ApplyEntryStatus, ApplyReport, SchedulerPlatform, default_state_dir,
-    execute_persisted_plan_apply, load_plan_from_path, validate_persisted_plan_for_apply,
+    ApplyEntryResult, ApplyEntryStatus, ApplyReport, SchedulerPlatform, StateRetentionPolicy,
+    default_state_dir, execute_persisted_plan_apply, load_plan_from_path, prune_reports_dir,
+    validate_persisted_plan_for_apply,
 };
 
 use super::{CliError, OutputFormat, next_path};
@@ -180,6 +181,14 @@ fn save_terminal_apply_report(
     let mut file = fs::File::create(&path)?;
     serde_json::to_writer_pretty(&mut file, &apply_json_document(report, command_label))?;
     writeln!(file)?;
+    // Terminal applies write here on every run and nothing else prunes this
+    // directory, so hold it to the same retention budget the service enforces.
+    // A failure to prune must not fail the apply that already succeeded.
+    let _ = prune_reports_dir(
+        &report_dir,
+        &StateRetentionPolicy::default(),
+        SystemTime::now(),
+    );
     Ok(path)
 }
 

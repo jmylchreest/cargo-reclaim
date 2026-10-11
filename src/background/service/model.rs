@@ -119,9 +119,13 @@ pub struct BackgroundServicePaths {
     pub state_dir: PathBuf,
     pub log_dir: PathBuf,
     pub plans_dir: PathBuf,
+    pub reports_dir: PathBuf,
     pub lock_path: PathBuf,
     pub state_path: PathBuf,
     pub runs_log_path: PathBuf,
+    /// Written by the generated scheduler runner script, not by this process, but
+    /// it lives in the same log directory and is rotated under the same budget.
+    pub scheduler_log_path: PathBuf,
 }
 
 impl BackgroundServicePaths {
@@ -130,9 +134,11 @@ impl BackgroundServicePaths {
         let log_dir = log_dir.into();
         Self {
             plans_dir: state_dir.join("plans"),
+            reports_dir: state_dir.join("reports"),
             lock_path: state_dir.join("service.lock"),
             state_path: state_dir.join("service-state.json"),
             runs_log_path: log_dir.join("runs.jsonl"),
+            scheduler_log_path: log_dir.join("scheduler.log"),
             state_dir,
             log_dir,
         }
