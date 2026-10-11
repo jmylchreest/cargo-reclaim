@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). cargo-r
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- Update the locked `crossbeam-epoch` dependency to 0.9.20 to address RUSTSEC-2026-0204.
+
+---
+
 ## [0.5.0] - 2026-07-22
 
 ### Added
