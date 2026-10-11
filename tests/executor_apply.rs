@@ -322,7 +322,11 @@ fn apply_preserves_an_unchanged_candidate_when_its_target_has_new_writes()
     fs::write(target.join(".rustc_info.json"), "{}")?;
     fs::write(&file, b"abc")?;
     let old = SystemTime::now() - Duration::from_secs(14 * 86400);
-    fs::File::open(&file)?.set_modified(old)?;
+    // Windows requires write-attribute access when updating file timestamps.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&file)?
+        .set_modified(old)?;
     let mut document = persisted_plan_for_path(&file, 3)?;
     document.body.plan.input.roots = vec![temp.path.to_string_lossy().into_owned()];
     document
